@@ -1,0 +1,49 @@
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.egg-info/
+dist/
+build/
+*.egg
+.eggs/
+
+# Environment
+.env
+*.env.local
+
+# ML model caches
+*.gguf
+*.ggml
+*.bin
+*.safetensors
+*.ot
+/models/
+/weights/
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Logs & temp files
+*.log
+/tmp/
+*.tmp
+*.swp
+
+# Test & coverage artifacts
+.coverage
+htmlcov/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# IDE
+.idea/
+*.iml
+
+# Qdrant local storage
+/qdrant_storage/

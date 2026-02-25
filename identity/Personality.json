@@ -1,0 +1,14 @@
+{
+  "resilience":     0.5,
+  "volatility":     0.4,
+  "expressiveness": 0.65,
+  "optimismBias":   0.1,
+  "dominanceBase":  0.55,
+  "ecs": {
+    "happiness": 0.60,
+    "love":      0.65,
+    "fear":      0.35,
+    "anger":     0.30,
+    "sadness":   0.50
+  }
+}
