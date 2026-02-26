@@ -269,8 +269,7 @@ async def _summarise_result(
     Falls back to a formatted plain-text summary if LLM is unavailable.
     """
     # Determine language from original request
-    has_chinese = bool(re.search(r"[\u4e00-\u9fff]", original_request))
-    lang_hint = "Reply in Chinese." if has_chinese else "Reply in English."
+    lang_hint = "Reply in English."
 
     no_result_phrases = ("no results found", "no search results", "search failed")
     is_empty = not raw_result or any(p in raw_result.lower() for p in no_result_phrases)
