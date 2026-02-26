@@ -77,7 +77,8 @@ class Settings(BaseSettings):
     # within this window are surfaced — keeps the LLM focused on the current
     # topic and prevents old conversations from bleeding into today's context.
     # Set to 0 to disable the filter entirely (recall all history).
-    knowledge_conv_recall_minutes: int = 15
+    # Increased to 720 (12 hours) to preserve context continuity.
+    knowledge_conv_recall_minutes: int = 720
 
     # Skill system
     # How many days before learned knowledge in ella_topic_knowledge is considered stale.
