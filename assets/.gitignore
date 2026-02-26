@@ -1,0 +1,12 @@
+# Ignore audio files by default — add explicit exceptions for committed reference files
+*.wav
+*.mp3
+*.m4a
+*.ogg
+*.flac
+*.aac
+
+# Keep folder and committed reference voice tracked
+!.gitkeep
+!.gitignore
+!speaker.m4a
