@@ -30,6 +30,26 @@ def create_celery_app() -> Celery:
         result_expires=86400,  # 24h
         worker_prefetch_multiplier=1,
         task_acks_late=True,
+        beat_schedule={
+            "proactive-weekly-checkin": {
+                "task": "ella.tasks.checkin.weekly_check_in",
+                # Run every Friday at 4 PM UTC. In production, chat_id should be pulled dynamically
+                # or triggered per active user. For now, we stub with a known primary chat_id or leave blank 
+                # (which requires the task to support no args and loop over users, but passing 0 as fallback).
+                "schedule": 604800.0, # Run once a week
+                "args": (0,)
+            },
+            "daily-distillation": {
+                "task": "ella.tasks.worker.execute_task",
+                # Run the distill code automatically
+                "schedule": 86400.0, # Run once a day
+                "args": (
+                    "distill_user_knowledge", 
+                    0, 
+                    {}
+                )
+            }
+        },
     )
     return app
 

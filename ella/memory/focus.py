@@ -157,10 +157,8 @@ def build_system_message() -> LLMMessage:
     return LLMMessage(role="system", content=SYSTEM_PERSONA)
 
 
-def derive_initial_objective(
+async def derive_initial_objective(
     user_message: str,
-    model: Any,
-    tokenizer: Any,
 ) -> str:
     """Derive an initial objective from the very first user message in a session.
 
@@ -200,7 +198,7 @@ def derive_initial_objective(
     ]
 
     try:
-        raw = _call_llm_plain(model, tokenizer, messages)
+        raw = await call_llm(messages)
         raw = re.sub(r"<think>[\s\S]*?</think>", "", raw, flags=re.IGNORECASE).strip()
         # Strip surrounding quotes if LLM wrapped the sentence in them
         raw = raw.strip('"\'')
@@ -213,10 +211,8 @@ def derive_initial_objective(
     return ""
 
 
-def summarise_recent_history(
+async def summarise_recent_history(
     goal: JobGoal,
-    model: Any,
-    tokenizer: Any,
     window_minutes: int = 15,
     max_steps: int = 15,
 ) -> tuple[str, str, str]:
@@ -307,7 +303,7 @@ def summarise_recent_history(
     ]
 
     try:
-        raw = _call_llm_plain(model, tokenizer, messages)
+        raw = await call_llm(messages)
         raw = re.sub(r"<think>[\s\S]*?</think>", "", raw, flags=re.IGNORECASE).strip()
         first_brace = raw.find("{")
         if first_brace >= 0:
@@ -332,24 +328,18 @@ def summarise_recent_history(
     return "", "", ""
 
 
-def _call_llm_plain(model: Any, tokenizer: Any, messages: list[LLMMessage]) -> str:
-    """Minimal LLM call used for fast utility prompts (no tool schemas, no reminder suffix)."""
-    from mlx_lm import generate
+async def call_llm(messages: list[LLMMessage]) -> str:
+    """Send an inference request to Gemini."""
+    from ella.llm.gemini_client import get_gemini_client
+    from ella.config import get_settings
+    settings = get_settings()
 
+    client = get_gemini_client(settings.google_api_key, settings.gemini_model)
     formatted = [
-        {"role": m.role if m.role != "tool" else "user", "content": m.content}
+        {"role": "user" if m.role == "system" else m.role, "content": m.content}
         for m in messages
     ]
-    apply_kwargs: dict = dict(tokenize=False, add_generation_prompt=True)
-    try:
-        model_name = getattr(tokenizer, "name_or_path", "") or ""
-        if "Qwen3" in model_name or "qwen3" in model_name.lower():
-            apply_kwargs["enable_thinking"] = False
-    except Exception:
-        pass
-
-    prompt = tokenizer.apply_chat_template(formatted, **apply_kwargs)
-    output = generate(model, tokenizer, prompt=prompt, max_tokens=512, verbose=False)
+    output = await client.chat_completion(messages=formatted)
     return output.strip() if isinstance(output, str) else str(output).strip()
 
 

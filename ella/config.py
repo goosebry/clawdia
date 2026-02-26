@@ -14,10 +14,7 @@ class Settings(BaseSettings):
     # Telegram
     telegram_bot_token: str
 
-    # MLX models
-    mlx_chat_model: str = "mlx-community/Qwen2.5-7B-Instruct-4bit"
-    mlx_vl_model: str = "mlx-community/Qwen2.5-VL-3B-Instruct-4bit"
-    mlx_whisper_model: str = "mlx-community/whisper-small-mlx"
+    # MLX models removed in favour of Gemini API
 
     # TTS (Qwen3-TTS via mlx-audio)
     # HuggingFace repo id for the Qwen3-TTS MLX model.
@@ -65,6 +62,8 @@ class Settings(BaseSettings):
     qdrant_url: str = "http://localhost:6333"
 
     # External APIs
+    google_api_key: str = ""
+    gemini_model: str = "gemini-2.5-flash"
     openai_api_key: str = ""
 
     # Tool system

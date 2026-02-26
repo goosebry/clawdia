@@ -1,20 +1,13 @@
 # Telegram
 httpx>=0.27.0
+google-genai>=0.5.0
 
 # Configuration
 pydantic-settings>=2.3.0
 pydantic>=2.7.0
 python-dotenv>=1.0.0
 
-# MLX inference (Apple Silicon — requires macOS arm64)
-mlx>=0.16.0
-mlx-lm>=0.16.0
-mlx-vlm>=0.1.0
-torchvision                    # required by Qwen2.5-VL processor (Qwen2VLVideoProcessor)
-mlx-whisper>=0.4.0
-
-# TTS — Qwen3-TTS via mlx-audio (MLX-native, no PyTorch dependency)
-mlx-audio>=0.3.1
+# MLX inference removed in favour of Gemini API
 
 # Embeddings
 sentence-transformers>=3.0.0

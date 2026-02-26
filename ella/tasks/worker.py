@@ -18,6 +18,8 @@ import re
 import subprocess
 from typing import Any
 
+from ella.agents.protocol import LLMMessage
+from ella.memory.focus import call_llm
 from ella.tasks.celery_app import celery_app
 
 logger = logging.getLogger(__name__)
@@ -294,27 +296,12 @@ async def _summarise_result(
         )
 
     try:
-        import mlx.core as mx
-        from mlx_lm import load, generate
-
-        model, tokenizer = load(settings.mlx_chat_model)
-        try:
-            prompt = tokenizer.apply_chat_template(
-                [
-                    {"role": "system", "content": system},
-                    {"role": "user", "content": user_content},
-                ],
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            output = generate(model, tokenizer, prompt=prompt, max_tokens=300, verbose=False)
-            return output.strip() if isinstance(output, str) else str(output).strip()
-        finally:
-            del model, tokenizer
-            try:
-                mx.metal.clear_cache()
-            except Exception:
-                pass
+        messages = [
+            LLMMessage(role="system", content=system),
+            LLMMessage(role="user", content=user_content),
+        ]
+        output = await call_llm(messages)
+        return output
     except Exception:
         logger.warning("LLM summarisation unavailable, sending formatted result")
         if is_empty:
@@ -333,37 +320,26 @@ async def _llm_route(
     settings: Any,
 ) -> str:
     """Use Qwen2.5-7B on-demand to decide the routing target."""
-    model = None
-    tokenizer = None
     try:
-        import mlx.core as mx
-        from mlx_lm import load, generate
-
-        logger.info("Loading routing LLM on-demand: %s", settings.mlx_chat_model)
-        model, tokenizer = load(settings.mlx_chat_model)
-
-        prompt_messages = [
-            {
-                "role": "system",
-                "content": (
+        messages = [
+            LLMMessage(
+                role="system",
+                content=(
                     "You are a task router. Given a task description, decide the best executor.\n"
                     "Reply with ONLY one of: cursor, codex, shell\n"
                     "cursor = coding tasks (write/modify code, debug, refactor)\n"
                     "codex = document creation, writing, summarisation\n"
                     "shell = file operations, system commands, data processing"
                 ),
-            },
-            {
-                "role": "user",
-                "content": f"Task type: {task_type}\nContext: {context}\nDescription: {description}",
-            },
+            ),
+            LLMMessage(
+                role="user",
+                content=f"Task type: {task_type}\nContext: {context}\nDescription: {description}",
+            ),
         ]
 
-        prompt = tokenizer.apply_chat_template(
-            prompt_messages, tokenize=False, add_generation_prompt=True
-        )
-        output = generate(model, tokenizer, prompt=prompt, max_tokens=10, verbose=False)
-        output = output.strip().lower() if isinstance(output, str) else "shell"
+        output = await call_llm(messages)
+        output = output.strip().lower()
 
         if "cursor" in output:
             return "cursor"
@@ -371,26 +347,9 @@ async def _llm_route(
             return "codex"
         return "shell"
 
-    except ImportError:
-        logger.warning("mlx-lm not available, using keyword-based route fallback")
-        return _keyword_route(description, task_type)
     except Exception as exc:
-        # Metal GPU is unavailable in Celery forked workers — fall back silently
-        if "MTLCompiler" in str(exc) or "metal" in str(exc).lower() or "loop" in str(exc).lower():
-            logger.warning("LLM routing unavailable in worker context, using keyword fallback")
-        else:
-            logger.exception("LLM routing failed, using keyword fallback")
+        logger.exception("LLM routing failed, using keyword fallback")
         return _keyword_route(description, task_type)
-    finally:
-        if model is not None:
-            del model
-        if tokenizer is not None:
-            del tokenizer
-        try:
-            import mlx.core as mx
-            mx.metal.clear_cache()
-        except Exception:
-            pass
 
 
 async def _run_cursor(description: str) -> str:
@@ -414,10 +373,36 @@ async def _run_cursor(description: str) -> str:
 
 
 async def _run_codex(description: str, settings: Any) -> str:
-    """Execute a document task via OpenAI Codex (GPT-4o)."""
+    """Execute a document task via Gemini (preferred) or OpenAI Codex fallback."""
+    
+    # Try Gemini first if API key is available
+    if hasattr(settings, 'google_api_key') and settings.google_api_key:
+        try:
+            logger.info("Using Gemini for task: %s", description[:100])
+            from ella.llm.gemini_client import get_gemini_client
+            
+            client = get_gemini_client(settings.google_api_key, settings.gemini_model)
+            response = await client.chat_completion(
+                messages=[
+                    {
+                        "role": "system", 
+                        "content": "You are a helpful AI assistant. Complete the task thoroughly and accurately."
+                    },
+                    {"role": "user", "content": description}
+                ],
+                max_tokens=2048,
+                temperature=0.7
+            )
+            return response
+            
+        except Exception as e:
+            logger.warning(f"Gemini failed, falling back to OpenAI: {e}")
+    
+    # Fallback to OpenAI
     if not settings.openai_api_key:
-        raise RuntimeError("OPENAI_API_KEY is not set. Cannot use Codex routing.")
+        raise RuntimeError("Neither GOOGLE_API_KEY nor OPENAI_API_KEY is set. Cannot process task.")
 
+    logger.info("Using OpenAI for task: %s", description[:100])
     from openai import AsyncOpenAI
 
     client = AsyncOpenAI(api_key=settings.openai_api_key)

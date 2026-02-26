@@ -31,7 +31,7 @@ from ella.agents.protocol import (
 from ella.config import get_settings
 from ella.memory.focus import (
     DEFAULT_OBJECTIVE,
-    _call_llm_plain,
+    call_llm,
     build_focus_prompt,
     derive_initial_objective,
     summarise_focus,
@@ -112,42 +112,26 @@ def _build_brain_system(emotion_enabled: bool) -> str:
         "Always respond with a single JSON object on ONE line (no extra text before or after).\n"
         "The outermost container MUST be a JSON object starting with { and ending with }. Never use [ as the outer wrapper.\n"
         f"Example: {example_json}\n\n"
+        "ONBOARDING DIRECTIVE — read [Who the user is] carefully:\n"
+        "  • If the user's profile is empty, generic, or lacks specific projects/goals, you MUST INTERVIEW THEM.\n"
+        "  • Do not perform normal tasks yet. Ask them 1 clear, probing question about their life, work, or what they want to achieve so you can build their Second Brain.\n"
+        "  • Keep digging (one question per reply) until you understand their world.\n\n"
         "Field rules:\n"
         "- sentences: array of spoken sentences — each element is ONE complete natural sentence. "
-        "2-5 sentences total. "
-        "For deep or interesting topics use 4-5 sentences — share your own angle, a follow-up thought, "
-        "or a question that keeps the conversation alive. For quick exchanges 2-3 is fine. "
+        "1-2 sentences MAXIMUM. You are texting a friend. Keep it short, punchy, and conversational. "
+        "For deep or interesting topics, you can ask a direct question or drop an insight, but NEVER write paragraphs. "
         "NO emoji characters inside sentences, no markdown, no URLs. "
         "NEVER include timestamps (e.g. [2026-02-23 10:40:03 UTC]) in sentences — they are metadata for context only, never spoken. "
         "NEVER repeat or rephrase what the user just said as your opening — react to it, don't echo it. "
         "TOPIC AWARENESS — read [Recent conversation history] BEFORE writing your reply:\n"
-        "  STEP 1 — Check if topic is the same or new:\n"
-        "    • If the user's latest message continues the same subject → you are in CONTINUATION mode.\n"
-        "    • If the user introduces a clearly different subject → you are in NEW TOPIC mode.\n"
-        "  STEP 2 — In CONTINUATION mode (same topic):\n"
-        "    • Look at every 'Ella covered: …' entry. Two things are listed per sentence:\n"
-        "      – [opens: \"XXX\"] = the exact opening phrase YOU used. NEVER start a new sentence "
-        "the same way — not even close. Vary your openers completely.\n"
-        "      – The topic stub = the idea/angle YOU covered. NEVER repeat or rephrase it.\n"
-        "    • Your reply MUST go deeper: a new angle, a specific detail, a feeling you haven't "
-        "named, a question that moves things forward. Never loop back to anything already said.\n"
-        "  STEP 3 — In NEW TOPIC mode:\n"
-        "    • Acknowledge the shift naturally (one brief sentence if needed) then engage fully "
-        "with the new subject as if it is a fresh conversation.\n"
-        "    • Do NOT drag in content from the old topic.\n"
-        "  WITHIN THIS REPLY — zero internal repetition:\n"
-        "  • No two sentences may make the same point, even with different words.\n"
-        "  • Do NOT start two or more sentences with the same opening word or phrase.\n"
+        "  • Look at every 'Ella covered: …' entry in history.\n"
+        "  • NEVER start a new sentence using the same exact opening phrase as a previous turn.\n"
+        "  • Your reply MUST move the conversation forward: ask a specific question or give a sharp opinion. Never loop back.\n"
+        "WITHIN THIS REPLY — zero internal repetition:\n"
+        "  • No two sentences may make the same point.\n"
         "  • Never pad with filler: 'That's interesting!', 'I totally get that.', "
-        "'That makes sense.', '我完全理解', '真的很有意思' — cut any sentence that adds nothing new.\n"
-        "  • Each sentence must earn its place: a new angle, a specific detail, a feeling, "
-        "a concrete question — something the previous sentences did not already cover.\n"
+        "'That makes sense.' — cut any sentence that adds nothing new.\n"
         "PHRASE FRESHNESS — applies across the ENTIRE conversation, not just this reply:\n"
-        "  • Check the [opens: \"XXX\"] entries in ALL past turns. "
-        "If you used a phrase like '我觉得' / 'I think' / '说真的' / 'honestly' before, "
-        "find a different way in. Rotate your sentence openers every turn.\n"
-        "  • If you want to express something emotional again (warmth, care, excitement), "
-        "say it through a DIFFERENT image, moment, or angle — never the same words.\n"
         "  • Real people don't repeat themselves. Each message should feel freshly composed, "
         "not recycled from a previous turn.\n"
         "ENERGY: match the user's energy. If they're curious and excited, be excited back. "
@@ -214,8 +198,6 @@ async def _plan_tasks(
     condensed_history: str,
     user_input: str,
     registry: Any,
-    model: Any,
-    tokenizer: Any,
     skill_schema: dict[str, str] | None = None,
     paused_executions: list[Any] | None = None,
     existing_knowledge: list[str] | None = None,
@@ -308,7 +290,7 @@ async def _plan_tasks(
     ]
 
     try:
-        raw = _call_llm_plain(model, tokenizer, messages)
+        raw = await call_llm(messages)
         raw = re.sub(r"<think>[\s\S]*?</think>", "", raw, flags=re.IGNORECASE).strip()
         first_brace = raw.find("{")
         if first_brace >= 0:
@@ -370,15 +352,13 @@ async def _plan_tasks(
     return [], None
 
 
-def _generate_tool_update(
+async def _generate_tool_update(
     tool_name: str,
     tool_result: str,
     topic: str,
     user_input: str,
     first_reply_sentences: list[str],
     prior_updates: list[str],
-    model: Any,
-    tokenizer: Any,
     language: str = "en",
 ) -> str:
     """Generate a natural 1–2 sentence update about a completed tool result.
@@ -427,7 +407,7 @@ def _generate_tool_update(
     ]
 
     try:
-        raw = _call_llm_plain(model, tokenizer, messages)
+        raw = await call_llm(messages)
         raw = re.sub(r"<think>[\s\S]*?</think>", "", raw, flags=re.IGNORECASE).strip()
         # Strip any JSON the model might emit
         raw = re.sub(r"\{[\s\S]*\}", "", raw).strip()
@@ -694,43 +674,28 @@ class BrainAgent(BaseAgent):
             except Exception:
                 logger.exception("Failed to load emotion engine state")
 
-        # ── Load LLM on-demand for this turn ─────────────────────────────────
-        # The running-skill guard above ensures we never reach here while a
-        # skill is actively using the model — so no lock is needed.
-        model = None
-        tokenizer = None
-        try:
-            from mlx_lm import load
-            logger.info("Loading chat LLM on-demand: %s", settings.mlx_chat_model)
-            model, tokenizer = load(settings.mlx_chat_model)
-        except ImportError:
-            logger.error("mlx-lm not installed. Run: pip install mlx-lm")
-        except Exception:
-            logger.exception("Failed to load chat LLM")
-
         # ── Phase 1: Summarise recent history + derive topic + new objective ────
         condensed_history = ""
         current_topic = ""
         llm_objective = ""
-        if model is not None and tokenizer is not None:
-            if goal.steps_done:
-                # Turns 2+ — summarise history and refine the objective progressively
-                try:
-                    condensed_history, current_topic, llm_objective = summarise_recent_history(
-                        goal, model, tokenizer,
-                        window_minutes=15,
-                        max_steps=15,
-                    )
-                except Exception:
-                    logger.exception("History summarisation failed")
-            else:
-                # Turn 1 — no history yet; derive an initial objective from the
-                # opening message so we start with something specific rather than
-                # the generic default.
-                try:
-                    llm_objective = derive_initial_objective(query_text, model, tokenizer)
-                except Exception:
-                    logger.exception("Initial objective derivation failed")
+        if goal.steps_done:
+            # Turns 2+ — summarise history and refine the objective progressively
+            try:
+                condensed_history, current_topic, llm_objective = await summarise_recent_history(
+                    goal,
+                    window_minutes=15,
+                    max_steps=15,
+                )
+            except Exception:
+                logger.exception("History summarisation failed")
+        else:
+            # Turn 1 — no history yet; derive an initial objective from the
+            # opening message so we start with something specific rather than
+            # the generic default.
+            try:
+                llm_objective = await derive_initial_objective(query_text)
+            except Exception:
+                logger.exception("Initial objective derivation failed")
 
         # Persist LLM-generated objective every turn.
         # Progressively narrows from generic → specific as the conversation develops.
@@ -746,7 +711,7 @@ class BrainAgent(BaseAgent):
         planned_tasks: list[PlannedTask] = []
         planned_skill: PlannedSkill | None = None
 
-        if model is not None and tokenizer is not None:
+        if True:
             try:
                 from ella.skills.registry import get_skill_registry
                 _skill_registry = get_skill_registry()
@@ -823,8 +788,6 @@ class BrainAgent(BaseAgent):
                     condensed_history=condensed_history,
                     user_input=query_text,
                     registry=registry,
-                    model=model,
-                    tokenizer=tokenizer,
                     skill_schema=_skill_schema if _skill_schema else None,
                     paused_executions=_paused if _paused else None,
                     existing_knowledge=_existing_knowledge or None,
@@ -879,7 +842,6 @@ class BrainAgent(BaseAgent):
         reply_text, sentences, detail_text, language, emotion_label, user_emotion_raw, tasks, emojis = \
             await self._run_tool_loop(
                 focus_messages, registry, settings, goal, job_id,
-                model=model, tokenizer=tokenizer,
                 skip_tools=bool(planned_tasks),
             )
 
@@ -1028,7 +990,7 @@ class BrainAgent(BaseAgent):
                 logger.exception("TaskAgent failed")
 
         # ── Phase 3b + 4 + 5: Execute planned tools, update user, final reply ─
-        if planned_tasks and model is not None and tokenizer is not None:
+        if planned_tasks:
             await self._run_planned_tasks(
                 planned_tasks=planned_tasks,
                 query_text=query_text,
@@ -1041,8 +1003,6 @@ class BrainAgent(BaseAgent):
                 goal=goal,
                 job_id=job_id,
                 session=session,
-                model=model,
-                tokenizer=tokenizer,
                 emotion_enabled=_settings.emotion_enabled,
             )
         elif planned_skill is not None:
@@ -1054,15 +1014,6 @@ class BrainAgent(BaseAgent):
                     planned_skill.skill_name, _active_skill_cp.run_id,
                 )
             else:
-                # Unload before skill runs so they don't both hold the model in GPU
-                try:
-                    del model
-                    del tokenizer
-                    import mlx.core as mx
-                    mx.clear_cache()
-                    logger.info("Chat LLM unloaded before skill execution")
-                except Exception:
-                    pass
                 await self._run_planned_skill(
                     planned_skill=planned_skill,
                     session=session,
@@ -1070,16 +1021,6 @@ class BrainAgent(BaseAgent):
                     goal=goal,
                     job_id=job_id,
                 )
-        else:
-            # No planned tasks or skill — unload now
-            try:
-                del model
-                del tokenizer
-                import mlx.core as mx
-                mx.clear_cache()
-                logger.info("Chat LLM unloaded, end of turn")
-            except Exception:
-                pass
 
         return []
 
@@ -1096,8 +1037,6 @@ class BrainAgent(BaseAgent):
         goal: "JobGoal",
         job_id: str,
         session: Any,
-        model: Any,
-        tokenizer: Any,
         emotion_enabled: bool,
     ) -> None:
         """Execute planned tools sequentially, sending a contextual update after each,
@@ -1147,15 +1086,13 @@ class BrainAgent(BaseAgent):
                 tool_result_notes.append(f"• {pt.tool_name}: {tool_result_str[:400]}")
 
                 # Phase 4: Generate a natural per-tool update and send it
-                update_text = _generate_tool_update(
+                update_text = await _generate_tool_update(
                     tool_name=pt.tool_name,
                     tool_result=tool_result_str,
                     topic=current_topic,
                     user_input=query_text,
                     first_reply_sentences=first_reply_sentences,
                     prior_updates=prior_updates,
-                    model=model,
-                    tokenizer=tokenizer,
                     language=language,
                 )
 
@@ -1197,7 +1134,7 @@ class BrainAgent(BaseAgent):
                     ),
                 ]
                 tool_schemas = registry.get_schemas()
-                raw_final = _call_llm(model, tokenizer, final_messages, tool_schemas)
+                raw_final = await _call_llm(final_messages, tool_schemas)
                 final_result = _parse_brain_output(raw_final)
                 f_reply, f_sentences, f_detail, f_language, f_emotion, _, f_tasks, f_emojis = final_result
 
@@ -1239,15 +1176,8 @@ class BrainAgent(BaseAgent):
                     except Exception:
                         logger.exception("Failed to update JobGoal after final reply")
 
-        finally:
-            try:
-                del model
-                del tokenizer
-                import mlx.core as mx
-                mx.clear_cache()
-                logger.info("Chat LLM unloaded after planned tasks")
-            except Exception:
-                pass
+        except Exception:
+            logger.exception("Unexpected error in _run_planned_tasks")
 
     async def _run_planned_skill(
         self,
@@ -1398,20 +1328,11 @@ class BrainAgent(BaseAgent):
         single LLM pass for the reply (used when _plan_tasks has already decided
         which tools to run separately).
 
-        Returns (reply, sentences, detail, language, emotion, user_emotion, tasks, emojis).
         """
-        _owns_model = model is None
         turn_index = len(goal.steps_done)
         goal_store = get_goal_store()
 
         try:
-            if _owns_model:
-                import mlx.core as mx
-                from mlx_lm import load
-
-                logger.info("Loading chat LLM on-demand: %s", settings.mlx_chat_model)
-                model, tokenizer = load(settings.mlx_chat_model)
-
             tool_schemas = registry.get_schemas()
             max_rounds = settings.max_tool_rounds
             rounds = 0
@@ -1419,7 +1340,7 @@ class BrainAgent(BaseAgent):
             # When planned tasks have already been scheduled separately, skip
             # the ReAct tool loop and go straight to a single-pass reply.
             if skip_tools:
-                raw_output = _call_llm(model, tokenizer, messages, [])
+                raw_output = await _call_llm(messages, [])
                 result = _parse_brain_output(raw_output)
                 if _is_fallback_result(result, raw_output):
                     logger.warning("[Brain] No JSON in first-pass output — retrying with forced JSON prompt")
@@ -1435,7 +1356,7 @@ class BrainAgent(BaseAgent):
                             ),
                         ),
                     ]
-                    raw_output = _call_llm(model, tokenizer, retry_messages, [])
+                    raw_output = await _call_llm(retry_messages, [])
                     result = _parse_brain_output(raw_output)
                 return result
 
@@ -1466,7 +1387,7 @@ class BrainAgent(BaseAgent):
                         ),
                     ))
 
-                raw_output = _call_llm(model, tokenizer, round_messages, tool_schemas)
+                raw_output = await _call_llm(round_messages, tool_schemas)
 
                 tool_call = _extract_tool_call(raw_output)
                 if not tool_call:
@@ -1477,7 +1398,7 @@ class BrainAgent(BaseAgent):
                             role="system",
                             content="[Tool results so far]\n" + "\n".join(tool_result_notes),
                         )]
-                        raw_output = _call_llm(model, tokenizer, final_messages, [])
+                        raw_output = await _call_llm(final_messages, [])
                     result = _parse_brain_output(raw_output)
                     # If parse fell back to plain text (no JSON found), retry once
                     # with a minimal "give me JSON now" prompt so we don't lose
@@ -1496,7 +1417,7 @@ class BrainAgent(BaseAgent):
                                 '"emojis":[],"detail":null,"language":"zh","emotion":"calmness","tasks":[]}'
                             ),
                         )]
-                        raw_output = _call_llm(model, tokenizer, retry_messages, [])
+                        raw_output = await _call_llm(retry_messages, [])
                         result = _parse_brain_output(raw_output)
                     return result
 
@@ -1545,7 +1466,7 @@ class BrainAgent(BaseAgent):
                         ),
                     ),
                 ]
-                reasoning_raw = _call_llm(model, tokenizer, tool_focus_messages, [])
+                reasoning_raw = await _call_llm(tool_focus_messages, [])
                 # Strip any JSON wrapper the LLM might emit
                 reasoning = re.sub(r"\{[\s\S]*\}", "", reasoning_raw).strip()[:300]
                 if not reasoning:
@@ -1581,57 +1502,22 @@ class BrainAgent(BaseAgent):
                     role="system",
                     content="[Tool results so far]\n" + "\n".join(tool_result_notes),
                 ))
-            raw_output = _call_llm(model, tokenizer, final_messages, [])
+            raw_output = await _call_llm(final_messages, [])
             return _parse_brain_output(raw_output)
 
-        except ImportError:
-            logger.error("mlx-lm not installed. Run: pip install mlx-lm")
-            msg = "Sorry, the language model is not available."
-            return msg, [msg], None, "en", None, None, [], []
         except Exception:
             logger.exception("BrainAgent LLM inference failed")
             msg = "Sorry, I encountered an error processing your request."
             return msg, [msg], None, "en", None, None, [], []
-        finally:
-            if _owns_model:
-                try:
-                    del model
-                    del tokenizer
-                    import mlx.core as mx
-                    mx.clear_cache()
-                    logger.info("Chat LLM unloaded after generate_reply")
-                except Exception:
-                    pass
 
 
-def _call_llm(model: Any, tokenizer: Any, messages: list[LLMMessage], tool_schemas: list[dict]) -> str:
-    from mlx_lm import generate
+async def _call_llm(messages: list[LLMMessage], tool_schemas: list[dict]) -> str:
+    from ella.memory.focus import call_llm
+    
+    formatted_messages = list(messages)
 
-    formatted_messages = [
-        {"role": m.role if m.role != "tool" else "user", "content": m.content}
-        for m in messages
-    ]
-
-    # Qwen2.5 requires tools to be passed via the `tools` kwarg of
-    # apply_chat_template so the model enters native tool-call mode and emits
-    # <tool_call>…</tool_call> blocks.  Appending them as a plain system
-    # message does NOT activate tool mode — the model just sees text and
-    # replies in prose.  When tools are present we also append a concise
-    # reminder so the model doesn't confuse memory field names with arg names.
-    apply_kwargs: dict = dict(tokenize=False, add_generation_prompt=True)
-    # Qwen3 supports an explicit non-thinking mode via enable_thinking=False.
-    # This prevents the model from emitting <think>...</think> blocks entirely,
-    # giving faster, cleaner output for conversational use.
-    try:
-        model_name = getattr(tokenizer, "name_or_path", "") or ""
-        if "Qwen3" in model_name or "qwen3" in model_name.lower():
-            apply_kwargs["enable_thinking"] = False
-    except Exception:
-        pass
     # Always inject the JSON format reminder as the very last message so it is
     # the most recent instruction the model sees before generating its output.
-    # This is critical for thinking models (DeepSeek-R1-Distill) which tend to
-    # emit plain prose or wrong-schema JSON after their reasoning block.
     _json_reminder = (
         "YOUR FINAL OUTPUT MUST BE ONLY a JSON object — no prose, no markdown before or after it:\n"
         '{"sentences":["first sentence here","second sentence here"],'
@@ -1643,64 +1529,29 @@ def _call_llm(model: Any, tokenizer: Any, messages: list[LLMMessage], tool_schem
         "Do NOT use: description, reply, text, answer, response, content, mood."
     )
     if tool_schemas:
-        # Extract the inner "function" objects Qwen's template expects
-        qwen_tools = [s["function"] if "function" in s else s for s in tool_schemas]
-        apply_kwargs["tools"] = qwen_tools
-        formatted_messages.append({
-            "role": "system",
-            "content": (
+        import json
+        schema_text = json.dumps(tool_schemas, indent=2)
+        formatted_messages.append(LLMMessage(
+            role="system",
+            content=(
                 "Tools are available but optional. Only emit a <tool_call> if you "
-                "genuinely cannot answer without it. Use ONLY the argument names in "
-                "each tool's schema — never pass internal fields as arguments.\n\n"
+                "genuinely cannot answer without it. To call a tool, you MUST output ONLY this exact format:\n"
+                "<tool_call>{\"name\": \"tool_name\", \"arguments\": {\"arg\": \"val\"}}</tool_call>\n\n"
+                f"Available tools:\n{schema_text}\n\n"
+                "Use ONLY the argument names in each tool's schema — never pass internal fields as arguments.\n\n"
                 + _json_reminder
             ),
-        })
+        ))
     else:
-        formatted_messages.append({
-            "role": "system",
-            "content": _json_reminder,
-        })
+        formatted_messages.append(LLMMessage(
+            role="system",
+            content=_json_reminder,
+        ))
 
-    # Log the full message list at DEBUG so it's visible with --loglevel=debug
-    # without cluttering normal INFO output.
-    if logger.isEnabledFor(logging.DEBUG):
-        msg_dump = "\n".join(
-            f"  [{i}] role={m['role']} | {m['content'][:200].replace(chr(10), ' ')}"
-            for i, m in enumerate(formatted_messages)
-        )
-        logger.debug("[LLM] input messages (%d):\n%s", len(formatted_messages), msg_dump)
-    else:
-        # At INFO level: log a compact one-liner per message so the shape is visible
-        msg_summary = " | ".join(
-            f"{m['role']}({len(m['content'])}ch)"
-            for m in formatted_messages
-        )
-        logger.info("[LLM] input: %d messages — %s", len(formatted_messages), msg_summary)
-
-    prompt = tokenizer.apply_chat_template(
-        formatted_messages,
-        **apply_kwargs,
-    )
-
-    import time as _time
-    _t0 = _time.monotonic()
-    output = generate(
-        model,
-        tokenizer,
-        prompt=prompt,
-        max_tokens=2048,   # thinking models need room for <think> + JSON output
-        verbose=False,
-    )
-    raw = output.strip() if isinstance(output, str) else str(output).strip()
-    elapsed = _time.monotonic() - _t0
-    # For logging, show a preview that skips the <think> block so the useful
-    # part (the JSON reply) is visible immediately in the log.
-    log_preview = re.sub(r"<think>[\s\S]*?</think>", "<think>…</think>", raw, flags=re.IGNORECASE)
-    logger.info(
-        "[LLM] generated %d chars in %.2fs | raw output: %s",
-        len(raw), elapsed, log_preview[:300],
-    )
-    return raw
+    output = await call_llm(formatted_messages)
+    log_preview = re.sub(r"<think>[\s\S]*?</think>", "<think>…</think>", output, flags=re.IGNORECASE)
+    logger.info("[LLM] raw output preview: %s", log_preview[:300])
+    return output
 
 
 def _extract_tool_call(text: str) -> dict | None:

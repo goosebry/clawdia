@@ -264,44 +264,15 @@ warn "  Personality.md   — narrative description of her emotional character"
 warn "Changes take effect immediately (hot-reloaded, no restart needed)."
 echo ""
 
-# ── Step 10: Pre-download MLX Models ─────────────────────────────────────────
-step "Pre-downloading MLX models (this may take a while)"
+# ── Step 10: Pre-download Embedding Model ────────────────────────────────────
+step "Pre-downloading local models (this may take a while)"
 log "Models will be cached in ~/.cache/huggingface"
 
 # Read model names from .env (or use defaults)
-CHAT_MODEL="$(grep '^MLX_CHAT_MODEL=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 || echo 'mlx-community/Qwen2.5-7B-Instruct-4bit')"
-VL_MODEL="$(grep '^MLX_VL_MODEL=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 || echo 'mlx-community/Qwen2.5-VL-3B-Instruct-4bit')"
-WHISPER_MODEL="$(grep '^MLX_WHISPER_MODEL=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 || echo 'mlx-community/whisper-small')"
 EMBED_MODEL="$(grep '^EMBED_MODEL=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 || echo 'paraphrase-multilingual-MiniLM-L12-v2')"
-
-# Use CHAT_MODEL default if empty
-CHAT_MODEL="${CHAT_MODEL:-mlx-community/Qwen2.5-7B-Instruct-4bit}"
-VL_MODEL="${VL_MODEL:-mlx-community/Qwen2.5-VL-3B-Instruct-4bit}"
-WHISPER_MODEL="${WHISPER_MODEL:-mlx-community/whisper-small}"
 EMBED_MODEL="${EMBED_MODEL:-paraphrase-multilingual-MiniLM-L12-v2}"
 
-log "Chat LLM:       $CHAT_MODEL"
-log "VL model:       $VL_MODEL"
-log "Whisper model:  $WHISPER_MODEL"
 log "Embed model:    $EMBED_MODEL"
-
-# Download chat LLM
-log "Downloading chat LLM..."
-python -c "
-from mlx_lm import load
-print('  Downloading $CHAT_MODEL...')
-load('$CHAT_MODEL')
-print('  Done.')
-" || warn "Chat LLM download failed — will download on first use."
-
-# Download whisper
-log "Downloading Whisper STT..."
-python -c "
-import mlx_whisper
-print('  Downloading $WHISPER_MODEL...')
-mlx_whisper.transcribe('/dev/null', path_or_hf_repo='$WHISPER_MODEL')
-print('  Done.')
-" 2>/dev/null || warn "Whisper download failed — will download on first use."
 
 # Download embedding model
 log "Downloading embedding model..."
@@ -311,26 +282,6 @@ print('  Downloading $EMBED_MODEL...')
 SentenceTransformer('$EMBED_MODEL')
 print('  Done.')
 " || warn "Embedding model download failed — will download on first use."
-
-# Download VL model (largest — warn about size)
-log "Downloading VL model (may be slow, ~4-5 GB)..."
-python -c "
-from mlx_vlm import load
-print('  Downloading $VL_MODEL...')
-load('$VL_MODEL')
-print('  Done.')
-" || warn "VL model download failed — will download on first use."
-
-# Pre-download Qwen3-TTS model
-TTS_MODEL="$(grep '^TTS_MODEL=' "$SCRIPT_DIR/.env" 2>/dev/null | cut -d= -f2 || echo 'mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit')"
-TTS_MODEL="${TTS_MODEL:-mlx-community/Qwen3-TTS-12Hz-1.7B-Base-8bit}"
-log "Downloading Qwen3-TTS model: $TTS_MODEL (~2 GB)..."
-python -c "
-from mlx_audio.tts.utils import load_model
-print('  Downloading $TTS_MODEL...')
-load_model('$TTS_MODEL')
-print('  Done.')
-" || warn "Qwen3-TTS download failed — will download on first use."
 
 # ── Step 10: launchd Services ─────────────────────────────────────────────────
 step "Installing launchd services (auto-start on login)"

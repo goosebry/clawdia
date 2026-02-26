@@ -377,6 +377,7 @@ class KnowledgeStore:
         source_url: str = "",
         source_type: str = "web",
         sensitivity: str = SENSITIVITY_DEFAULT,
+        para_tag: str = "resources",
         learned_by_chat_id: int = 0,
     ) -> None:
         """Store a knowledge chunk from a learning session into ella_topic_knowledge.
@@ -386,10 +387,15 @@ class KnowledgeStore:
         source_url: origin URL or file path
         source_type: "web" | "pdf" | "rednote" | "user_input" | "bot_input"
         sensitivity: "public" | "internal" | "private" | "secret" (default "secret")
+        para_tag: Tiago Forte tag — "projects", "areas", "resources", or "archives"
         learned_by_chat_id: chat_id that triggered the learning run
         """
         if sensitivity not in SENSITIVITY_LEVELS:
             sensitivity = SENSITIVITY_DEFAULT
+            
+        valid_para = ("projects", "areas", "resources", "archives")
+        if para_tag not in valid_para:
+            para_tag = "resources"
 
         vector = embed(chunk_text)
         now = datetime.now(timezone.utc).isoformat()
@@ -399,6 +405,7 @@ class KnowledgeStore:
             "source_type": source_type,
             "chunk_text": chunk_text,
             "sensitivity": sensitivity,
+            "para_tag": para_tag,
             "learned_at": now,
             "learned_by_chat_id": learned_by_chat_id,
         }
@@ -416,6 +423,7 @@ class KnowledgeStore:
         query: str,
         top_k: int = 5,
         sensitivity_allow: tuple[str, ...] = SENSITIVITY_LEVELS,
+        para_allow: tuple[str, ...] = ("projects", "areas", "resources"),
         min_score: float = 0.0,
     ) -> list[dict[str, Any]]:
         """Semantic search over ella_topic_knowledge.
@@ -425,6 +433,7 @@ class KnowledgeStore:
         KNOWLEDGE_FRESHNESS_DAYS.
 
         sensitivity_allow: tuple of sensitivity levels to include.
+        para_allow: filters Tiago Forte tags (Archives excluded by default).
         min_score: minimum cosine similarity to include a result (0.0 = no filter).
         """
         settings = get_settings()
@@ -454,6 +463,8 @@ class KnowledgeStore:
             payload = dict(hit.payload or {})
             payload["_score"] = hit.score
             if payload.get("sensitivity", SENSITIVITY_DEFAULT) not in sensitivity_allow:
+                continue
+            if payload.get("para_tag", "resources") not in para_allow:
                 continue
             learned_at_str = payload.get("learned_at", "")
             if learned_at_str:

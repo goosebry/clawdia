@@ -18,6 +18,7 @@ from typing import Any
 from ella.skills.base import BaseSkill, SkillContext, SkillResult
 from ella.skills.registry import ella_skill
 from ella.agents.protocol import LLMMessage
+from ella.memory.focus import call_llm
 
 logger = logging.getLogger(__name__)
 
@@ -173,9 +174,6 @@ class LearnSkill(BaseSkill):
             f"✅ Learning complete! Stored {stored_points} knowledge chunks about '{goal}'."
         )
 
-        # Unload so BrainAgent's reply turn can reload fresh without OOM.
-        _unload_llm()
-
         return SkillResult(
             summary=final_summary,
             stored_points=stored_points,
@@ -185,48 +183,7 @@ class LearnSkill(BaseSkill):
 
 
 # ── LLM helpers ──────────────────────────────────────────────────────────────
-# LearnSkill owns a module-level LLM singleton for the duration of its run.
-# The running-skill guard in BrainAgent prevents any chat turn from loading
-# the model concurrently — so no lock is needed. The model is explicitly
-# unloaded at the end of run() so BrainAgent's post-skill reply turn can load
-# it fresh without OOM.
-
-_llm_model = None
-_llm_tokenizer = None
-
-
-def _load_llm():
-    global _llm_model, _llm_tokenizer
-    if _llm_model is not None:
-        return _llm_model, _llm_tokenizer
-    try:
-        from mlx_lm import load
-        from ella.config import get_settings
-        settings = get_settings()
-        logger.info("[LearnSkill] Loading LLM: %s", settings.mlx_chat_model)
-        _llm_model, _llm_tokenizer = load(settings.mlx_chat_model)
-        return _llm_model, _llm_tokenizer
-    except Exception as exc:
-        logger.warning("[LearnSkill] LLM load failed: %s", exc)
-        return None, None
-
-
-def _unload_llm() -> None:
-    global _llm_model, _llm_tokenizer
-    if _llm_model is None:
-        return
-    try:
-        del _llm_model
-        del _llm_tokenizer
-        import mlx.core as mx
-        mx.clear_cache()
-        logger.info("[LearnSkill] LLM unloaded, GPU cache cleared")
-    except Exception as exc:
-        logger.warning("[LearnSkill] LLM unload failed: %s", exc)
-    finally:
-        _llm_model = None
-        _llm_tokenizer = None
-
+# LearnSkill now uses the shared Gemini API client via `call_llm`.
 
 _ANALYSE_CHUNK = 12000   # ~3000 tokens — safe single-call window
 _ANALYSE_SYSTEM = (
@@ -271,12 +228,6 @@ async def _analyse(goal: str, context: SkillContext) -> dict[str, Any]:
     """
     import json
     import re
-    from ella.memory.focus import _call_llm_plain
-
-    model, tokenizer = _load_llm()
-    if model is None:
-        logger.warning("[LearnSkill] LLM unavailable — skipping analysis")
-        return {"summary": "", "questions": []}
 
     chunks = _chunk_notes(context.notes)
     total_chars = sum(len(c) for c in chunks)
@@ -302,7 +253,7 @@ async def _analyse(goal: str, context: SkillContext) -> dict[str, Any]:
             ),
         ]
         try:
-            raw = _call_llm_plain(model, tokenizer, messages)
+            raw = await call_llm(messages)
             raw = re.sub(r"<think>[\s\S]*?</think>", "", raw, flags=re.IGNORECASE).strip()
             m = re.search(r"\{.*\}", raw, re.DOTALL)
             if m:
@@ -320,11 +271,6 @@ async def _analyse(goal: str, context: SkillContext) -> dict[str, Any]:
 async def _synthesise(goal: str, context: SkillContext) -> str:
     """Produce a final plain-text summary of everything learned."""
     import re
-    from ella.memory.focus import _call_llm_plain
-
-    model, tokenizer = _load_llm()
-    if model is None:
-        return f"Research completed on '{goal}'. {len(context.notes)} sources collected."
 
     notes_block = "\n\n---\n\n".join(context.notes)[:10000]
     messages = [
@@ -338,7 +284,7 @@ async def _synthesise(goal: str, context: SkillContext) -> str:
         ),
     ]
     try:
-        result = _call_llm_plain(model, tokenizer, messages)
+        result = await call_llm(messages)
         result = re.sub(r"<think>[\s\S]*?</think>", "", result, flags=re.IGNORECASE).strip()
         return result
     except Exception:

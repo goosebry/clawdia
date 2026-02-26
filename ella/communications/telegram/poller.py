@@ -63,6 +63,7 @@ class TelegramPoller:
     def _group_by_chat(
         self, raw_updates: list[dict[str, Any]]
     ) -> dict[int, list[dict[str, Any]]]:
+        logger.info(f"Raw updates payload: {raw_updates}")
         groups: dict[int, list[dict[str, Any]]] = {}
         for raw in raw_updates:
             msg = raw.get("message")
