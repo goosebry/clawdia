@@ -140,13 +140,7 @@ def _build_brain_system(emotion_enabled: bool) -> str:
         "Never give a flat, closed answer when the conversation clearly wants to go further. "
         "Write the way a real person actually chats — not textbook, not formal, not translated. "
         "CRITICAL LANGUAGE RULES:\n"
-        "  • If the user wrote ANY Chinese characters → ALL sentences MUST be in Chinese (Mandarin). "
-        "    Sound like a native: use casual particles (啊、呀、哈、嘛、呢、吧), everyday colloquial words, "
-        "    and the natural rhythm of how people actually text in Chinese. "
-        "    Avoid stiff written-Chinese phrasing (e.g. '我认为' → prefer '我觉得'; '非常' → prefer '很'/'超'; "
-        "    '您好' → never use; '确实' → prefer '对啊'/'没错'). "
-        "    Match the energy: warm and casual unless the user is being serious.\n"
-        "  • If the user wrote in English → reply in English. "
+        "  • Reply in English. "
         "    Sound like a real person texting: contractions (I'm, don't, that's), "
         "    casual connectors (anyway, honestly, oh wait, right?), natural sentence rhythm. "
         "    Not stiff, not overly polished.\n"
@@ -155,7 +149,7 @@ def _build_brain_system(emotion_enabled: bool) -> str:
         "- emojis: ALWAYS an empty list []. Do not use emojis at all.\n"
         "- detail: full content for a follow-up text message (links, lists, code, data). "
         "null if sentences cover everything.\n"
-        "- language: 'zh' if user wrote any Chinese characters, otherwise 'en'.\n"
+        "- language: 'en'.\n"
         + emotion_field +
         "- tasks: ONLY for background jobs that map to a supported type below. "
         "NEVER use tasks[] for research, learning, or knowledge topics — those are handled by skills in the separate planner pass. "
@@ -374,11 +368,7 @@ async def _generate_tool_update(
 
     already_said = "\n".join(already_said_parts) if already_said_parts else "(nothing yet)"
     topic_line = f"Conversation topic: {topic}\n" if topic else ""
-    lang_instruction = (
-        "Reply in Chinese (Mandarin), casual and natural like a friend texting."
-        if language == "zh"
-        else "Reply in English, casual and natural like a friend texting."
-    )
+    lang_instruction = "Reply in English, casual and natural like a friend texting."
 
     messages = [
         LLMMessage(
