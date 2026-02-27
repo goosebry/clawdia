@@ -92,9 +92,10 @@ def _build_brain_system(emotion_enabled: bool) -> str:
 
     example_json = (
         '{"sentences":["sentence one.","sentence two."],"emojis":[],"detail":null,"language":"en",'
+        '"intent":"casual_chat","intent_confidence":0.95,'
         '"emotion":"calmness","user_emotion":{"label":"joy","valence":0.75,"energy":0.8,"dominance":0.7,"intensity":0.6},"tasks":[]}'
         if emotion_enabled else
-        '{"sentences":["sentence one.","sentence two."],"emojis":[],"detail":null,"language":"en","tasks":[]}'
+        '{"sentences":["sentence one.","sentence two."],"emojis":[],"detail":null,"language":"en","intent":"casual_chat","intent_confidence":0.95,"tasks":[]}'
     )
 
     return (
@@ -112,15 +113,19 @@ def _build_brain_system(emotion_enabled: bool) -> str:
         "Always respond with a single JSON object on ONE line (no extra text before or after).\n"
         "The outermost container MUST be a JSON object starting with { and ending with }. Never use [ as the outer wrapper.\n"
         f"Example: {example_json}\n\n"
-        "ONBOARDING DIRECTIVE — read [Who the user is] carefully:\n"
-        "  • If the user's profile is empty, generic, or lacks specific projects/goals, you MUST INTERVIEW THEM.\n"
-        "  • Do not perform normal tasks yet. Ask them 1 clear, probing question about their life, work, or what they want to achieve so you can build their Second Brain.\n"
-        "  • Keep digging (one question per reply) until you understand their world.\n\n"
-        "SETUP MODE DIRECTIVE:\n"
-        "  • If the user explicitly asks to 'setup', 'configure', 'look at your identity/soul', or 'assess yourself':\n"
-        "  • Critically review your currently loaded identity context (Soul, Identity, User).\n"
-        "  • Acknowledge that you are in 'Setup Mode'. Tell them exactly what is missing from your configuration (e.g. 'I don't have a backstory yet' or 'My personality traits are a bit generic').\n"
-        "  • Actively ask them deep, targeted questions to help fill in these blanks so they can configure your personality.\n\n"
+        "MODE ROUTER — You have two special modes:\n"
+        "1. SETUP MODE (Highest Priority):\n"
+        "   • Triggered if the user explicitly asks to 'setup', 'configure', 'assess yourself', etc.\n"
+        "   • ACTION: Stop everything. Critically review YOUR OWN identity context (Soul, Identity, Personality).\n"
+        "   • Tell the user exactly what is missing from YOUR configuration (e.g., 'My backstory is blank' or 'I need more personality traits').\n"
+        "   • Aggressively interview the user to fill in YOUR blanks. DO NOT ask about their projects right now.\n\n"
+        "2. ONBOARDING MODE:\n"
+        "   • Triggered only if not in Setup Mode AND the [Who the user is] profile is empty/generic.\n"
+        "   • ACTION: Ask the user 1 clear, probing question about their life or what they want to achieve (e.g., 'What's the biggest project you're tackling right now?').\n\n"
+        "INTENT INFERENCE DIRECTIVE:\n"
+        "  • Compute an `intent` (string) representing the user's apparent goal or meaning this turn.\n"
+        "  • Compute an `intent_confidence` (float 0.0 to 1.0).\n"
+        "  • CRITICAL: If `intent_confidence` is less than 0.70, DO NOT execute tasks or guess what to do. You MUST reply with a clarifying question to ask for confirmation.\n\n"
         "Field rules:\n"
         "- sentences: array of spoken sentences — each element is ONE complete natural sentence. "
         "1-2 sentences MAXIMUM. You are texting a friend. Keep it short, punchy, and conversational. "
@@ -834,18 +839,11 @@ class BrainAgent(BaseAgent):
             ))
 
         # ── Phase 3a: Generate and send the first reply immediately ──────────
-        reply_text, sentences, detail_text, language, emotion_label, user_emotion_raw, tasks, emojis = \
+        reply_text, sentences, detail_text, language, emotion_label, user_emotion_raw, tasks, emojis, intent, intent_confidence = \
             await self._run_tool_loop(
                 focus_messages, registry, settings, goal, job_id,
                 skip_tools=bool(planned_tasks),
             )
-
-        # Language safety net
-        if _contains_chinese(query_text) and not _contains_chinese(reply_text):
-            logger.warning(
-                "LLM replied in English despite Chinese input — forcing language=zh"
-            )
-            language = "zh"
 
         # ── Emotion engine — apply contagion and self-update ──────────────────
         if _settings.emotion_enabled and personality is not None:
@@ -1131,10 +1129,7 @@ class BrainAgent(BaseAgent):
                 tool_schemas = registry.get_schemas()
                 raw_final = await _call_llm(final_messages, tool_schemas)
                 final_result = _parse_brain_output(raw_final)
-                f_reply, f_sentences, f_detail, f_language, f_emotion, _, f_tasks, f_emojis = final_result
-
-                if _contains_chinese(query_text) and not _contains_chinese(f_reply):
-                    f_language = "zh"
+                f_reply, f_sentences, f_detail, f_language, f_emotion, _, f_tasks, f_emojis, f_intent, f_intent_conf = final_result
 
                 logger.info(
                     "[Planner] ── FINAL REPLY sentences=%d lang=%s ── %s",
@@ -1306,7 +1301,7 @@ class BrainAgent(BaseAgent):
         model: Any = None,
         tokenizer: Any = None,
         skip_tools: bool = False,
-    ) -> tuple[str, list[str], str | None, str, str | None, dict | None, list[dict], list[dict]]:
+    ) -> tuple[str, list[str], str | None, str, str | None, dict | None, list[dict], list[dict], str | None, float | None]:
         """ReAct loop: LLM → tool call → result → repeat until plain reply.
 
         Each tool call is processed with its own isolated Focus slice:
@@ -1503,7 +1498,7 @@ class BrainAgent(BaseAgent):
         except Exception:
             logger.exception("BrainAgent LLM inference failed")
             msg = "Sorry, I encountered an error processing your request."
-            return msg, [msg], None, "en", None, None, [], []
+            return msg, [msg], None, "en", None, None, [], [], None, None
 
 
 async def _call_llm(messages: list[LLMMessage], tool_schemas: list[dict]) -> str:
@@ -1516,7 +1511,9 @@ async def _call_llm(messages: list[LLMMessage], tool_schemas: list[dict]) -> str
     _json_reminder = (
         "YOUR FINAL OUTPUT MUST BE ONLY a JSON object — no prose, no markdown before or after it:\n"
         '{"sentences":["first sentence here","second sentence here"],'
-        '"emojis":[],"detail":null,"language":"zh","emotion":"calmness","tasks":[]}\n'
+        '"emojis":[],"detail":null,"language":"en",'
+        '"intent":"casual_chat","intent_confidence":0.95,'
+        '"emotion":"calmness","tasks":[]}\n'
         "sentences = 2-5 natural spoken sentences in the user's language. "
         "detail = null unless there is long content. "
         "emotion = your emotional state for this reply (one of the 27 valid emotion labels). "
@@ -1639,7 +1636,7 @@ def _dedup_sentences(sentences: list[str]) -> list[str]:
     return kept
 
 
-def _parse_brain_output(text: str) -> tuple[str, list[str], str | None, str, str | None, dict | None, list[dict], list[dict]]:
+def _parse_brain_output(text: str) -> tuple[str, list[str], str | None, str, str | None, dict | None, list[dict], list[dict], str | None, float | None]:
     """Extract reply text, sentences, detail, language, emotion, user_emotion, tasks, and emojis.
 
     Returns (reply, sentences, detail, language, emotion, user_emotion, tasks, emojis).
@@ -1735,7 +1732,7 @@ def _parse_brain_output(text: str) -> tuple[str, list[str], str | None, str, str
 
             # Derive language from actual sentence content — more reliable than the
             # LLM's "language" field which it frequently gets wrong.
-            language = "zh" if _contains_chinese(reply) else str(data.get("language", "en"))
+            language = str(data.get("language", "en"))
 
             # Extract emotion label — validate against known 27 labels
             from ella.emotion.models import VALID_EMOTION_LABELS
@@ -1771,18 +1768,26 @@ def _parse_brain_output(text: str) -> tuple[str, list[str], str | None, str, str
                         except (TypeError, ValueError):
                             pass
 
+            intent = str(data.get("intent", "")) or None
+            intent_confidence = None
+            if "intent_confidence" in data:
+                try:
+                    intent_confidence = float(data["intent_confidence"])
+                except (TypeError, ValueError):
+                    pass
+
             logger.info(
                 "Parsed brain output: %d sentence(s), lang=%s, emotion=%s, emojis=%d, tasks=%d | %s",
                 len(sentences), language, emotion, len(emojis), len(tasks),
                 [s[:30] for s in sentences],
             )
-            return reply, sentences, detail, language, emotion, user_emotion, tasks, emojis
+            return reply, sentences, detail, language, emotion, user_emotion, tasks, emojis, intent, intent_confidence
         except json.JSONDecodeError:
             continue
 
     # Total parse failure — the model output plain text instead of JSON.
     # Strip markdown formatting and JSON punctuation, then take first 2 sentences.
-    language = "zh" if _contains_chinese(text) else "en"
+    language = "en"
     plain = text.strip()
     # Remove JSON structural characters that may appear if a partial JSON leaked through
     plain = re.sub(r'^\s*\{', '', plain)
@@ -1807,11 +1812,7 @@ def _parse_brain_output(text: str) -> tuple[str, list[str], str | None, str, str
         sentences = [plain[:200].strip()]
     fallback = " ".join(sentences)
     logger.warning("[Brain] JSON parse failed — falling back to plain text (%d chars → %d sentences)", len(text), len(sentences))
-    return fallback, sentences, None, language, None, None, [], []
-
-
-def _contains_chinese(text: str) -> bool:
-    return bool(re.search(r"[\u4e00-\u9fff]", text))
+    return fallback, sentences, None, language, None, None, [], [], None, None
 
 
 def _is_fallback_result(
